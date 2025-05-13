@@ -14,3 +14,4 @@ requests
 openpyxl
 pyreadstat
 xlsxwriter
+adjustText
