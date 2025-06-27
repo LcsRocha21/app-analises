@@ -390,51 +390,30 @@ def gerar_relatorio(dados):
             st.error(f"Erro ao gerar relatório: {e}")
 
 
-# Função para análise de correspondência com botão para editar e excluir rótulos
-
 def analise_correspondencia(dados):
     st.header("Análise de Correspondência")
-
-    # Seleção de colunas categóricas
     colunas_categoricas = st.multiselect("Selecione as colunas categóricas para a análise:", dados.columns)
 
     if len(colunas_categoricas) >= 2:
-        # Criação da tabela de contingência (sem totais)
         tabela_contingencia = pd.crosstab(
             dados[colunas_categoricas[0]],
             dados[colunas_categoricas[1]],
             normalize=False
         )
 
-        # Análise de correspondência com Prince (mais próxima do R)
-        ca = prince.CA(
-            n_components=2,
-            n_iter=10,
-            copy=True,
-            check_input=True,
-            engine='sklearn',
-            random_state=42
-        )
+        ca = prince.CA(n_components=2, n_iter=10, copy=True, check_input=True, engine='sklearn', random_state=42)
         ca = ca.fit(tabela_contingencia)
 
-        coordenadas_linhas = ca.row_coordinates(tabela_contingencia)
-        coordenadas_colunas = ca.column_coordinates(tabela_contingencia)
+        coordenadas_linhas = ca.row_coordinates(tabela_contingencia) * -1
+        coordenadas_colunas = ca.column_coordinates(tabela_contingencia) * -1
 
-        # Opcional: inverter sinais para ficar igual ao R
-        coordenadas_linhas *= -1
-        coordenadas_colunas *= -1
-
-        # Verifica se existem ao menos duas dimensões
         if coordenadas_linhas.shape[1] >= 2 and coordenadas_colunas.shape[1] >= 2:
-
-            # Mostrar variância explicada
             st.subheader("Inércia explicada (variância)")
             eigenvalues = ca.eigenvalues_
             explained_inertia = eigenvalues / eigenvalues.sum()
             for i, valor in enumerate(explained_inertia):
                 st.write(f"Dim {i+1}: {valor*100:.2f}%")
 
-            # Atualiza ou cria rotulos e deslocamentos no estado da sessão
             st.session_state['rotulos_linhas'] = {
                 i: st.session_state.get('rotulos_linhas', {}).get(i, str(i))
                 for i in coordenadas_linhas.index
@@ -452,35 +431,47 @@ def analise_correspondencia(dados):
                 for i in coordenadas_colunas.index
             }
 
-            # Caixa para edição das legendas
             legenda_linhas = st.text_input("Legenda para Linhas:", "Linhas")
             legenda_colunas = st.text_input("Legenda para Colunas:", "Colunas")
-
-            # Checkbox para edição de rótulos
             editar_rotulos = st.checkbox("Editar Rótulos e Posições")
 
             if editar_rotulos:
                 st.subheader("Editar Rótulos e Posições")
-
-                # Edição de rótulos e deslocamentos para linhas
                 for i in coordenadas_linhas.index:
-                    st.session_state['rotulos_linhas'][i] = st.text_input(f"Novo rótulo para linha '{i}':", 
-                                                                          value=st.session_state['rotulos_linhas'][i])
-                    desloc_x, desloc_y = st.session_state['deslocamentos_linhas'][i]
-                    desloc_x = st.slider(f"Deslocamento X para linha '{i}':", -1.0, 1.0, desloc_x, 0.01)
-                    desloc_y = st.slider(f"Deslocamento Y para linha '{i}':", -1.0, 1.0, desloc_y, 0.01)
+                    st.session_state['rotulos_linhas'][i] = st.text_input(f"Novo rótulo para linha '{i}':", value=st.session_state['rotulos_linhas'][i])
+
+                    col1, col2 = st.columns([1, 4])
+                    with col1:
+                        desloc_x = st.number_input(f"X linha '{i}'", -1.0, 1.0, st.session_state['deslocamentos_linhas'][i][0], 0.01, key=f"num_x_linha_{i}")
+                    with col2:
+                        desloc_x = st.slider(f"", -1.0, 1.0, desloc_x, 0.01, key=f"slider_x_linha_{i}")
+
+                    col3, col4 = st.columns([1, 4])
+                    with col3:
+                        desloc_y = st.number_input(f"Y linha '{i}'", -1.0, 1.0, st.session_state['deslocamentos_linhas'][i][1], 0.01, key=f"num_y_linha_{i}")
+                    with col4:
+                        desloc_y = st.slider(f"", -1.0, 1.0, desloc_y, 0.01, key=f"slider_y_linha_{i}")
+
                     st.session_state['deslocamentos_linhas'][i] = (desloc_x, desloc_y)
 
                     if st.checkbox(f"Remover rótulo da linha '{i}'", key=f"remover_linha_{i}"):
                         st.session_state['rotulos_linhas'][i] = None
 
-                # Edição de rótulos e deslocamentos para colunas
                 for i in coordenadas_colunas.index:
-                    st.session_state['rotulos_colunas'][i] = st.text_input(f"Novo rótulo para coluna '{i}':", 
-                                                                          value=st.session_state['rotulos_colunas'][i])
-                    desloc_x, desloc_y = st.session_state['deslocamentos_colunas'][i]
-                    desloc_x = st.slider(f"Deslocamento X para coluna '{i}':", -1.0, 1.0, desloc_x, 0.01)
-                    desloc_y = st.slider(f"Deslocamento Y para coluna '{i}':", -1.0, 1.0, desloc_y, 0.01)
+                    st.session_state['rotulos_colunas'][i] = st.text_input(f"Novo rótulo para coluna '{i}':", value=st.session_state['rotulos_colunas'][i])
+
+                    col1, col2 = st.columns([1, 4])
+                    with col1:
+                        desloc_x = st.number_input(f"X coluna '{i}'", -1.0, 1.0, st.session_state['deslocamentos_colunas'][i][0], 0.01, key=f"num_x_coluna_{i}")
+                    with col2:
+                        desloc_x = st.slider(f"", -1.0, 1.0, desloc_x, 0.01, key=f"slider_x_coluna_{i}")
+
+                    col3, col4 = st.columns([1, 4])
+                    with col3:
+                        desloc_y = st.number_input(f"Y coluna '{i}'", -1.0, 1.0, st.session_state['deslocamentos_colunas'][i][1], 0.01, key=f"num_y_coluna_{i}")
+                    with col4:
+                        desloc_y = st.slider(f"", -1.0, 1.0, desloc_y, 0.01, key=f"slider_y_coluna_{i}")
+
                     st.session_state['deslocamentos_colunas'][i] = (desloc_x, desloc_y)
 
                     if st.checkbox(f"Remover rótulo da coluna '{i}'", key=f"remover_coluna_{i}"):
@@ -491,8 +482,7 @@ def analise_correspondencia(dados):
             max_deslocamento = 0.05
 
             for i, row in coordenadas_linhas.iterrows():
-                x = row.iloc[0]
-                y = row.iloc[1]
+                x, y = row.iloc[0], row.iloc[1]
                 if st.session_state['rotulos_linhas'][i] is not None:
                     desloc_x, desloc_y = st.session_state['deslocamentos_linhas'][i]
                     desloc_x = max(-max_deslocamento, min(max_deslocamento, desloc_x * (x / abs(x) if x != 0 else 1)))
@@ -502,8 +492,7 @@ def analise_correspondencia(dados):
                     texts.append(text)
 
             for i, row in coordenadas_colunas.iterrows():
-                x = row.iloc[0]
-                y = row.iloc[1]
+                x, y = row.iloc[0], row.iloc[1]
                 if st.session_state['rotulos_colunas'][i] is not None:
                     desloc_x, desloc_y = st.session_state['deslocamentos_colunas'][i]
                     desloc_x = max(-max_deslocamento, min(max_deslocamento, desloc_x * (x / abs(x) if x != 0 else 1)))
@@ -512,16 +501,7 @@ def analise_correspondencia(dados):
                     text = ax.text(x + desloc_x, y + desloc_y, st.session_state['rotulos_colunas'][i], color='red', fontsize=8, ha='center', va='bottom', fontweight='bold')
                     texts.append(text)
 
-            adjust_text(
-                texts,
-                arrowprops=None,
-                force_text=(0.5, 1),
-                force_points=(0.5, 1),
-                expand_text=(1.2, 1.5),
-                expand_points=(1.2, 1.5),
-                lim=100
-            )
-
+            adjust_text(texts, arrowprops=None, force_text=(0.5, 1), force_points=(0.5, 1), expand_text=(1.2, 1.5), expand_points=(1.2, 1.5), lim=100)
             ax.axhline(0, color='black', linestyle='--', linewidth=0.8)
             ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
             ax.set_aspect('auto')
@@ -529,13 +509,10 @@ def analise_correspondencia(dados):
             ax.legend(loc='upper right', frameon=False, fontsize=12)
             plt.title("Análise de Correspondência", fontsize=14)
             st.pyplot(fig)
-
         else:
             st.error("A análise de correspondência não conseguiu gerar duas dimensões. Verifique os dados selecionados.")
-
     else:
         st.warning("Selecione pelo menos duas colunas categóricas para realizar a análise.")
-
 
 
 
