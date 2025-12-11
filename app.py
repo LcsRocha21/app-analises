@@ -10,10 +10,9 @@ import scipy.stats as stats
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
-import prince  # Para análise de correspondência
+import prince  # Import ainda existe, mas não é mais usado na CA
 from io import StringIO
 from io import BytesIO
-from adjustText import adjust_text
 from adjustText import adjust_text
 from matplotlib.lines import Line2D
 from statsmodels.stats.outliers_influence import variance_inflation_factor
@@ -31,6 +30,11 @@ from scipy.stats import chi2_contingency
 import pyreadstat
 import tempfile
 import os
+import matplotlib.pyplot as plt
+from adjustText import adjust_text
+import plotly.graph_objects as go
+
+
 
 # Configurar página do Streamlit
 st.set_page_config(page_title="Análise de Dados Automática", layout="wide")
@@ -97,8 +101,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
-
 # URL da imagem
 url = "https://institutoinforma.com.br/wp-content/uploads/2025/01/logo_informa.webp"
 
@@ -131,6 +133,11 @@ def carregar_dados(uploaded_file):
                 st.warning("Codificação 'utf-8' falhou. Tentando com 'latin1'.")
                 dados = pd.read_csv(uploaded_file, encoding='latin1')
 
+            st.success(f"Dados carregados com sucesso! Número de registros: {dados.shape[0]}")
+            st.write("Visualização dos dados:", dados.head())
+            # Para CSV, usamos o mesmo DF para dados e exibição
+            return dados, dados
+
         elif uploaded_file.name.endswith('.xlsx'):
             dados = pd.read_excel(uploaded_file)
             st.success(f"Dados carregados com sucesso! Número de registros: {dados.shape[0]}")
@@ -142,7 +149,7 @@ def carregar_dados(uploaded_file):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".sav") as tmp:
                 tmp.write(uploaded_file.getvalue())
                 tmp_path = tmp.name
-            
+
             # Ler o arquivo SPSS preservando os valores numéricos
             dados, meta = pyreadstat.read_sav(tmp_path)
 
@@ -196,13 +203,13 @@ def validar_arquivo(arquivo):
         st.warning("Nenhum arquivo carregado.")
         return None
 
+
 def tratamento_dados(dados):
     st.header("Tratamento de Dados")
 
     if dados is None:
         st.warning("Nenhum dado disponível para tratamento. Por favor, carregue um arquivo primeiro.")
         return
-
 
     # Inicializar o estado da sessão para os dados tratados, se ainda não existir
     if 'dados_tratados' not in st.session_state:
@@ -245,7 +252,7 @@ def tratamento_dados(dados):
     if st.button("Salvar Alterações no Arquivo"):
         try:
             # Salvar os dados tratados como CSV com delimitador adequado e codificação ISO-8859-1
-            csv = st.session_state['dados_tratados'].to_csv(index=False, sep=';', encoding='iso-8859-1')  # Usar ISO-8859-1 para maior compatibilidade com Excel
+            csv = st.session_state['dados_tratados'].to_csv(index=False, sep=';', encoding='iso-8859-1')
             st.download_button(
                 label="Baixar Dados Tratados",
                 data=csv,
@@ -258,7 +265,6 @@ def tratamento_dados(dados):
 
     # Retornar os dados tratados
     return st.session_state['dados_tratados']
-
 
 
 # Função para gráficos
@@ -297,14 +303,11 @@ def gerar_graficos(dados):
             if len(colunas) == 2:
                 st.subheader(f"Gráfico de Dispersão: {colunas[0]} vs {colunas[1]}")
 
-                # Criar o gráfico, independentemente do tipo de dados
                 fig, ax = plt.subplots(figsize=(10, 6))
-        
-                # Verificar se uma das colunas é categórica
+
                 if not pd.api.types.is_numeric_dtype(dados[colunas[0]]) or not pd.api.types.is_numeric_dtype(dados[colunas[1]]):
                     st.info("Detectamos colunas categóricas. As categorias serão automaticamente mapeadas para valores numéricos.")
-        
-                # Criar o scatterplot (o Seaborn lida automaticamente com dados categóricos)
+
                 sns.scatterplot(x=dados[colunas[0]], y=dados[colunas[1]], ax=ax)
                 ax.set_title(f"{colunas[0]} vs {colunas[1]}")
                 ax.set_xlabel(colunas[0])
@@ -344,7 +347,7 @@ def preprocessar_dados(dados):
         else:
             # Se houver palavras, converter a coluna inteira para string
             dados[coluna] = dados[coluna].astype(str)
-    
+
     return dados
 
 
@@ -355,13 +358,12 @@ def gerar_relatorio(dados):
     # Pré-processando os dados para garantir que não haja tipos mistos
     dados = preprocessar_dados(dados)
 
-    
     # Configuração das colunas a incluir no relatório
     st.subheader("Configurar Relatório")
     colunas_selecionadas = st.multiselect(
         "Selecione as colunas que deseja incluir no relatório:",
         options=dados.columns,
-        default=dados.columns,  # Seleciona todas as colunas por padrão
+        default=dados.columns,
     )
 
     # Filtrar dados com base nas colunas selecionadas
@@ -390,130 +392,444 @@ def gerar_relatorio(dados):
             st.error(f"Erro ao gerar relatório: {e}")
 
 
+# === CA MANUAL (SEM PRINCE) =====================================
+
+def _ca_manual(tabela_contingencia, n_components=2):
+    """
+    Implementação manual de Análise de Correspondência via SVD,
+    equivalente ao que o R faz.
+
+    Retorna:
+        coordenadas_linhas (DataFrame),
+        coordenadas_colunas (DataFrame),
+        eigenvalues (array)
+    """
+    N = tabela_contingencia.to_numpy(dtype=float)
+    n = N.sum()
+    if n <= 0:
+        raise ValueError("Tabela de contingência vazia.")
+
+    # Frequências relativas
+    P = N / n
+    r = P.sum(axis=1)   # massas das linhas
+    c = P.sum(axis=0)   # massas das colunas
+
+    # Remove linhas/colunas com massa zero
+    row_mask = r > 0
+    col_mask = c > 0
+
+    if row_mask.sum() < 2 or col_mask.sum() < 2:
+        raise ValueError("Linhas/colunas insuficientes com massa > 0 para a CA.")
+
+    P_rc = P[np.ix_(row_mask, col_mask)]
+    r_rc = r[row_mask]
+    c_rc = c[col_mask]
+
+    # Matrizes diagonais inversa da raiz
+    D_r_inv_sqrt = np.diag(1.0 / np.sqrt(r_rc))
+    D_c_inv_sqrt = np.diag(1.0 / np.sqrt(c_rc))
+
+    expected = np.outer(r_rc, c_rc)
+    S = D_r_inv_sqrt @ (P_rc - expected) @ D_c_inv_sqrt
+
+    U, singvals, VT = np.linalg.svd(S, full_matrices=False)
+    eigenvalues = singvals ** 2
+
+    # Coordenadas principais
+    F = D_r_inv_sqrt @ U @ np.diag(singvals)
+    G = D_c_inv_sqrt @ VT.T @ np.diag(singvals)
+
+    k = min(n_components, F.shape[1])
+    F = F[:, :k]
+    G = G[:, :k]
+    eigenvalues = eigenvalues[:k]
+
+    row_index = tabela_contingencia.index[row_mask]
+    col_index = tabela_contingencia.columns[col_mask]
+    cols = [f"Dim{i+1}" for i in range(k)]
+
+    coordenadas_linhas = pd.DataFrame(F, index=row_index, columns=cols)
+    coordenadas_colunas = pd.DataFrame(G, index=col_index, columns=cols)
+
+    return coordenadas_linhas, coordenadas_colunas, eigenvalues
+
 def analise_correspondencia(dados):
     st.header("Análise de Correspondência")
-    colunas_categoricas = st.multiselect("Selecione as colunas categóricas para a análise:", dados.columns)
 
-    if len(colunas_categoricas) >= 2:
-        tabela_contingencia = pd.crosstab(
-            dados[colunas_categoricas[0]],
-            dados[colunas_categoricas[1]],
-            normalize=False
-        )
+    # Seleção de colunas categóricas
+    colunas_categoricas = st.multiselect(
+        "Selecione as colunas categóricas para a análise:",
+        dados.columns
+    )
 
-        ca = prince.CA(n_components=2, n_iter=10, copy=True, check_input=True, engine='sklearn', random_state=42)
-        ca = ca.fit(tabela_contingencia)
-
-        coordenadas_linhas = ca.row_coordinates(tabela_contingencia) * -1
-        coordenadas_colunas = ca.column_coordinates(tabela_contingencia) * -1
-
-        if coordenadas_linhas.shape[1] >= 2 and coordenadas_colunas.shape[1] >= 2:
-            st.subheader("Inércia explicada (variância)")
-            eigenvalues = ca.eigenvalues_
-            explained_inertia = eigenvalues / eigenvalues.sum()
-            for i, valor in enumerate(explained_inertia):
-                st.write(f"Dim {i+1}: {valor*100:.2f}%")
-
-            st.session_state['rotulos_linhas'] = {
-                i: st.session_state.get('rotulos_linhas', {}).get(i, str(i))
-                for i in coordenadas_linhas.index
-            }
-            st.session_state['rotulos_colunas'] = {
-                i: st.session_state.get('rotulos_colunas', {}).get(i, str(i))
-                for i in coordenadas_colunas.index
-            }
-            st.session_state['deslocamentos_linhas'] = {
-                i: st.session_state.get('deslocamentos_linhas', {}).get(i, (0.0, 0.0))
-                for i in coordenadas_linhas.index
-            }
-            st.session_state['deslocamentos_colunas'] = {
-                i: st.session_state.get('deslocamentos_colunas', {}).get(i, (0.0, 0.0))
-                for i in coordenadas_colunas.index
-            }
-
-            legenda_linhas = st.text_input("Legenda para Linhas:", "Linhas")
-            legenda_colunas = st.text_input("Legenda para Colunas:", "Colunas")
-            editar_rotulos = st.checkbox("Editar Rótulos e Posições")
-
-            if editar_rotulos:
-                st.subheader("Editar Rótulos e Posições")
-                for i in coordenadas_linhas.index:
-                    st.session_state['rotulos_linhas'][i] = st.text_input(f"Novo rótulo para linha '{i}':", value=st.session_state['rotulos_linhas'][i])
-
-                    col1, col2 = st.columns([1, 4])
-                    with col1:
-                        desloc_x = st.number_input(f"X linha '{i}'", -1.0, 1.0, st.session_state['deslocamentos_linhas'][i][0], 0.01, key=f"num_x_linha_{i}")
-                    with col2:
-                        desloc_x = st.slider(f"", -1.0, 1.0, desloc_x, 0.01, key=f"slider_x_linha_{i}")
-
-                    col3, col4 = st.columns([1, 4])
-                    with col3:
-                        desloc_y = st.number_input(f"Y linha '{i}'", -1.0, 1.0, st.session_state['deslocamentos_linhas'][i][1], 0.01, key=f"num_y_linha_{i}")
-                    with col4:
-                        desloc_y = st.slider(f"", -1.0, 1.0, desloc_y, 0.01, key=f"slider_y_linha_{i}")
-
-                    st.session_state['deslocamentos_linhas'][i] = (desloc_x, desloc_y)
-
-                    if st.checkbox(f"Remover rótulo da linha '{i}'", key=f"remover_linha_{i}"):
-                        st.session_state['rotulos_linhas'][i] = None
-
-                for i in coordenadas_colunas.index:
-                    st.session_state['rotulos_colunas'][i] = st.text_input(f"Novo rótulo para coluna '{i}':", value=st.session_state['rotulos_colunas'][i])
-
-                    col1, col2 = st.columns([1, 4])
-                    with col1:
-                        desloc_x = st.number_input(f"X coluna '{i}'", -1.0, 1.0, st.session_state['deslocamentos_colunas'][i][0], 0.01, key=f"num_x_coluna_{i}")
-                    with col2:
-                        desloc_x = st.slider(f"", -1.0, 1.0, desloc_x, 0.01, key=f"slider_x_coluna_{i}")
-
-                    col3, col4 = st.columns([1, 4])
-                    with col3:
-                        desloc_y = st.number_input(f"Y coluna '{i}'", -1.0, 1.0, st.session_state['deslocamentos_colunas'][i][1], 0.01, key=f"num_y_coluna_{i}")
-                    with col4:
-                        desloc_y = st.slider(f"", -1.0, 1.0, desloc_y, 0.01, key=f"slider_y_coluna_{i}")
-
-                    st.session_state['deslocamentos_colunas'][i] = (desloc_x, desloc_y)
-
-                    if st.checkbox(f"Remover rótulo da coluna '{i}'", key=f"remover_coluna_{i}"):
-                        st.session_state['rotulos_colunas'][i] = None
-
-            fig, ax = plt.subplots(figsize=(8, 6))
-            texts = []
-            max_deslocamento = 0.05
-
-            for i, row in coordenadas_linhas.iterrows():
-                x, y = row.iloc[0], row.iloc[1]
-                if st.session_state['rotulos_linhas'][i] is not None:
-                    desloc_x, desloc_y = st.session_state['deslocamentos_linhas'][i]
-                    desloc_x = max(-max_deslocamento, min(max_deslocamento, desloc_x * (x / abs(x) if x != 0 else 1)))
-                    desloc_y = max(-max_deslocamento, min(max_deslocamento, desloc_y * (y / abs(y) if y != 0 else 1)))
-                    ax.scatter(x, y, color='blue', marker='o', s=20, label=legenda_linhas if i == coordenadas_linhas.index[0] else "")
-                    text = ax.text(x + desloc_x, y + desloc_y, st.session_state['rotulos_linhas'][i], color='blue', fontsize=8, ha='center', va='bottom', fontweight='bold')
-                    texts.append(text)
-
-            for i, row in coordenadas_colunas.iterrows():
-                x, y = row.iloc[0], row.iloc[1]
-                if st.session_state['rotulos_colunas'][i] is not None:
-                    desloc_x, desloc_y = st.session_state['deslocamentos_colunas'][i]
-                    desloc_x = max(-max_deslocamento, min(max_deslocamento, desloc_x * (x / abs(x) if x != 0 else 1)))
-                    desloc_y = max(-max_deslocamento, min(max_deslocamento, desloc_y * (y / abs(y) if y != 0 else 1)))
-                    ax.scatter(x, y, color='red', marker='^', s=30, label=legenda_colunas if i == coordenadas_colunas.index[0] else "")
-                    text = ax.text(x + desloc_x, y + desloc_y, st.session_state['rotulos_colunas'][i], color='red', fontsize=8, ha='center', va='bottom', fontweight='bold')
-                    texts.append(text)
-
-            adjust_text(texts, arrowprops=None, force_text=(0.5, 1), force_points=(0.5, 1), expand_text=(1.2, 1.5), expand_points=(1.2, 1.5), lim=100)
-            ax.axhline(0, color='black', linestyle='--', linewidth=0.8)
-            ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
-            ax.set_aspect('auto')
-            ax.grid(color='gray', linestyle='--', linewidth=0.5, alpha=0.6)
-            ax.legend(loc='upper right', frameon=False, fontsize=12)
-            plt.title("Análise de Correspondência", fontsize=14)
-            st.pyplot(fig)
-        else:
-            st.error("A análise de correspondência não conseguiu gerar duas dimensões. Verifique os dados selecionados.")
-    else:
+    if len(colunas_categoricas) < 2:
         st.warning("Selecione pelo menos duas colunas categóricas para realizar a análise.")
+        return
 
+    # Tabela de contingência
+    tabela_contingencia = pd.crosstab(
+        dados[colunas_categoricas[0]],
+        dados[colunas_categoricas[1]],
+        normalize=False
+    )
+
+    # CA manual
+    try:
+        coordenadas_linhas, coordenadas_colunas, eigenvalues = _ca_manual(
+            tabela_contingencia,
+            n_components=2
+        )
+    except Exception as e:
+        st.error(f"Não foi possível calcular a Análise de Correspondência: {e}")
+        return
+
+    # Inverter sinais para ficar similar ao R
+    coordenadas_linhas *= -1
+    coordenadas_colunas *= -1
+
+    if coordenadas_linhas.shape[1] < 2 or coordenadas_colunas.shape[1] < 2:
+        st.error("A análise de correspondência não conseguiu gerar duas dimensões. Verifique os dados selecionados.")
+        return
+
+    # Inércia explicada
+    st.subheader("Inércia explicada (variância)")
+    explained_inertia = eigenvalues / eigenvalues.sum()
+    for i, valor in enumerate(explained_inertia):
+        st.write(f"Dim {i+1}: {valor * 100:.2f}%")
+
+    # ---------- ESTADO (rótulos e deslocamentos) ----------
+
+    if 'rotulos_linhas' not in st.session_state:
+        st.session_state['rotulos_linhas'] = {i: str(i) for i in coordenadas_linhas.index}
+    else:
+        for i in coordenadas_linhas.index:
+            st.session_state['rotulos_linhas'].setdefault(i, str(i))
+
+    if 'rotulos_colunas' not in st.session_state:
+        st.session_state['rotulos_colunas'] = {i: str(i) for i in coordenadas_colunas.index}
+    else:
+        for i in coordenadas_colunas.index:
+            st.session_state['rotulos_colunas'].setdefault(i, str(i))
+
+    if 'deslocamentos_linhas' not in st.session_state:
+        st.session_state['deslocamentos_linhas'] = {i: (0.0, 0.0) for i in coordenadas_linhas.index}
+    else:
+        for i in coordenadas_linhas.index:
+            st.session_state['deslocamentos_linhas'].setdefault(i, (0.0, 0.0))
+
+    if 'deslocamentos_colunas' not in st.session_state:
+        st.session_state['deslocamentos_colunas'] = {i: (0.0, 0.0) for i in coordenadas_colunas.index}
+    else:
+        for i in coordenadas_colunas.index:
+            st.session_state['deslocamentos_colunas'].setdefault(i, (0.0, 0.0))
+
+    # Legendas gerais
+    legenda_linhas = st.text_input("Legenda para Linhas:", "Linhas")
+    legenda_colunas = st.text_input("Legenda para Colunas:", "Colunas")
+
+    # Controle para mostrar/ocultar itens de legenda
+    mostrar_legenda = st.checkbox("Mostrar legenda (Linhas/Colunas)", value=False)
+
+    # --------- EDIÇÃO NUMÉRICA DOS RÓTULOS / DESLOCAMENTOS ---------
+
+    editar_rotulos = st.checkbox("Editar rótulos e deslocamentos")
+
+    if editar_rotulos:
+        st.subheader("Editar Rótulos e Posições")
+
+        st.markdown("**Linhas**")
+        for i in coordenadas_linhas.index:
+            st.session_state['rotulos_linhas'][i] = st.text_input(
+                f"Novo rótulo para linha '{i}':",
+                value=st.session_state['rotulos_linhas'][i],
+                key=f"rotulo_linha_{i}"
+            )
+
+            dx, dy = st.session_state['deslocamentos_linhas'][i]
+            dx = st.number_input(
+                f"Deslocamento X para linha '{i}':",
+                min_value=-1.0,
+                max_value=1.0,
+                value=float(dx),
+                step=0.01,
+                format="%.2f",
+                key=f"num_desloc_x_linha_{i}"
+            )
+            dy = st.number_input(
+                f"Deslocamento Y para linha '{i}':",
+                min_value=-1.0,
+                max_value=1.0,
+                value=float(dy),
+                step=0.01,
+                format="%.2f",
+                key=f"num_desloc_y_linha_{i}"
+            )
+            st.session_state['deslocamentos_linhas'][i] = (dx, dy)
+
+            if st.checkbox(f"Remover ponto e rótulo da linha '{i}'", key=f"remover_linha_{i}"):
+                st.session_state['rotulos_linhas'][i] = None
+
+        st.markdown("**Colunas**")
+        for i in coordenadas_colunas.index:
+            st.session_state['rotulos_colunas'][i] = st.text_input(
+                f"Novo rótulo para coluna '{i}':",
+                value=st.session_state['rotulos_colunas'][i],
+                key=f"rotulo_coluna_{i}"
+            )
+
+            dx, dy = st.session_state['deslocamentos_colunas'][i]
+            dx = st.number_input(
+                f"Deslocamento X para coluna '{i}':",
+                min_value=-1.0,
+                max_value=1.0,
+                value=float(dx),
+                step=0.01,
+                format="%.2f",
+                key=f"num_desloc_x_coluna_{i}"
+            )
+            dy = st.number_input(
+                f"Deslocamento Y para coluna '{i}':",
+                min_value=-1.0,
+                max_value=1.0,
+                value=float(dy),
+                step=0.01,
+                format="%.2f",
+                key=f"num_desloc_y_coluna_{i}"
+            )
+            st.session_state['deslocamentos_colunas'][i] = (dx, dy)
+
+            if st.checkbox(f"Remover ponto e rótulo da coluna '{i}'", key=f"remover_coluna_{i}"):
+                st.session_state['rotulos_colunas'][i] = None
+
+    # ----------------- PRÉ-CÁLCULO DOS PONTOS VISÍVEIS -----------------
+
+    max_deslocamento = 0.05
+    pontos_linhas = []
+    pontos_colunas = []
+
+    for i, row in coordenadas_linhas.iterrows():
+        if st.session_state['rotulos_linhas'][i] is None:
+            continue
+        x = row.iloc[0]
+        y = row.iloc[1]
+        dx, dy = st.session_state['deslocamentos_linhas'][i]
+        dx = max(-max_deslocamento, min(max_deslocamento, dx * (x / abs(x) if x != 0 else 1)))
+        dy = max(-max_deslocamento, min(max_deslocamento, dy * (y / abs(y) if y != 0 else 1)))
+        pontos_linhas.append({"x": x, "y": y, "dx": dx, "dy": dy, "label": st.session_state['rotulos_linhas'][i]})
+
+    for i, row in coordenadas_colunas.iterrows():
+        if st.session_state['rotulos_colunas'][i] is None:
+            continue
+        x = row.iloc[0]
+        y = row.iloc[1]
+        dx, dy = st.session_state['deslocamentos_colunas'][i]
+        dx = max(-max_deslocamento, min(max_deslocamento, dx * (x / abs(x) if x != 0 else 1)))
+        dy = max(-max_deslocamento, min(max_deslocamento, dy * (y / abs(y) if y != 0 else 1)))
+        pontos_colunas.append({"x": x, "y": y, "dx": dx, "dy": dy, "label": st.session_state['rotulos_colunas'][i]})
+
+    # ----------------- MAPA ESTÁTICO (MATPLOTLIB) -----------------
+
+    st.subheader("Mapa estático")
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    texts = []
+    linha_legenda_plotada = False
+    coluna_legenda_plotada = False
+
+    for p in pontos_linhas:
+        label_legenda = legenda_linhas if (mostrar_legenda and not linha_legenda_plotada) else ""
+        ax.scatter(p["x"], p["y"], color="blue", marker="o", s=20, label=label_legenda)
+        if mostrar_legenda and not linha_legenda_plotada:
+            linha_legenda_plotada = True
+
+        txt = ax.text(
+            p["x"] + p["dx"],
+            p["y"] + p["dy"],
+            p["label"],
+            color="blue",
+            fontsize=8,
+            ha="center",
+            va="bottom",
+            fontweight="bold",
+        )
+        texts.append(txt)
+
+    for p in pontos_colunas:
+        label_legenda = legenda_colunas if (mostrar_legenda and not coluna_legenda_plotada) else ""
+        ax.scatter(p["x"], p["y"], color="red", marker="^", s=30, label=label_legenda)
+        if mostrar_legenda and not coluna_legenda_plotada:
+            coluna_legenda_plotada = True
+
+        txt = ax.text(
+            p["x"] + p["dx"],
+            p["y"] + p["dy"],
+            p["label"],
+            color="red",
+            fontsize=8,
+            ha="center",
+            va="bottom",
+            fontweight="bold",
+        )
+        texts.append(txt)
+
+    adjust_text(
+        texts,
+        arrowprops=None,
+        force_text=(0.5, 1),
+        force_points=(0.5, 1),
+        expand_text=(1.2, 1.5),
+        expand_points=(1.2, 1.5),
+        lim=100,
+    )
+
+    ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
+    ax.axvline(0, color="black", linestyle="--", linewidth=0.8)
+    ax.grid(color="lightgray", linestyle="--", linewidth=0.5, alpha=0.7)
+    ax.set_aspect("auto")
+
+    if mostrar_legenda and (linha_legenda_plotada or coluna_legenda_plotada):
+        ax.legend(loc="upper right", frameon=False, fontsize=12)
+
+    ax.set_title("Análise de Correspondência", fontsize=14)
+    st.pyplot(fig)
+
+    # ----------------- MAPA INTERATIVO (PLOTLY, MESMO DESIGN) -----------------
+
+    st.subheader("Mapa interativo")
+
+    fig_int = go.Figure()
+
+    fig_int.add_trace(go.Scatter(
+        x=[p["x"] for p in pontos_linhas],
+        y=[p["y"] for p in pontos_linhas],
+        mode="markers",
+        name=legenda_linhas,
+        marker=dict(color="blue", symbol="circle", size=8),
+        showlegend=mostrar_legenda and len(pontos_linhas) > 0
+    ))
+
+    fig_int.add_trace(go.Scatter(
+        x=[p["x"] for p in pontos_colunas],
+        y=[p["y"] for p in pontos_colunas],
+        mode="markers",
+        name=legenda_colunas,
+        marker=dict(color="red", symbol="triangle-up", size=10),
+        showlegend=mostrar_legenda and len(pontos_colunas) > 0
+    ))
+
+    annotations = []
+    for p in pontos_linhas:
+        annotations.append(dict(
+            x=p["x"] + p["dx"],
+            y=p["y"] + p["dy"],
+            xref="x",
+            yref="y",
+            text=p["label"],
+            showarrow=False,
+            font=dict(color="blue", size=10),
+            xanchor="center",
+            yanchor="bottom",
+        ))
+    for p in pontos_colunas:
+        annotations.append(dict(
+            x=p["x"] + p["dx"],
+            y=p["y"] + p["dy"],
+            xref="x",
+            yref="y",
+            text=p["label"],
+            showarrow=False,
+            font=dict(color="red", size=10),
+            xanchor="center",
+            yanchor="bottom",
+        ))
+
+    xs = [p["x"] for p in pontos_linhas] + [p["x"] for p in pontos_colunas]
+    ys = [p["y"] for p in pontos_linhas] + [p["y"] for p in pontos_colunas]
+
+    if xs and ys:
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+        dx = (x_max - x_min) * 0.1 or 0.1
+        dy = (y_max - y_min) * 0.1 or 0.1
+        x_range = [x_min - dx, x_max + dx]
+        y_range = [y_min - dy, y_max + dy]
+    else:
+        x_range = [-1, 1]
+        y_range = [-1, 1]
+
+    fig_int.update_layout(
+        template=None,
+        title=dict(
+            text="Análise de Correspondência",
+            font=dict(color="black", size=14),
+            x=0.5
+        ),
+        font=dict(color="black"),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        annotations=annotations,
+        showlegend=mostrar_legenda,
+        legend=dict(
+            x=0.99, y=0.99,
+            xanchor="right", yanchor="top",
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color="black", size=12),
+        ),
+        margin=dict(l=40, r=20, t=60, b=40),
+        xaxis=dict(range=x_range),
+        yaxis=dict(range=y_range),
+    )
+
+    fig_int.update_xaxes(
+        title=dict(text="", font=dict(color="black")),
+        showgrid=True,
+        gridcolor="lightgray",
+        gridwidth=0.5,
+        griddash="dash",
+        zeroline=False,
+        tickfont=dict(color="black"),
+        linecolor="black",
+        mirror=True,
+    )
+    fig_int.update_yaxes(
+        title=dict(text="", font=dict(color="black")),
+        showgrid=True,
+        gridcolor="lightgray",
+        gridwidth=0.5,
+        griddash="dash",
+        zeroline=False,
+        tickfont=dict(color="black"),
+        linecolor="black",
+        mirror=True,
+    )
+
+    # Linhas em 0 (como no estático)
+    fig_int.add_shape(
+        type="line",
+        x0=x_range[0], x1=x_range[1],
+        y0=0, y1=0,
+        line=dict(color="black", width=1, dash="dash"),
+        xref="x", yref="y",
+        layer="above"
+    )
+    fig_int.add_shape(
+        type="line",
+        x0=0, x1=0,
+        y0=y_range[0], y1=y_range[1],
+        line=dict(color="black", width=1, dash="dash"),
+        xref="x", yref="y",
+        layer="above"
+    )
+
+    config = {
+        "editable": True,
+        "edits": {"annotationPosition": True},
+    }
+
+    st.plotly_chart(fig_int, use_container_width=True, config=config)
 
 
 def cruzar_variaveis_formatada(dados):
@@ -602,7 +918,6 @@ def cruzar_variaveis_formatada(dados):
     )
 
 
-
 @st.cache_data
 def compute_crosstab(var1, var2, data):
     """Função para calcular tabela de contingência e estatísticas associadas."""
@@ -620,11 +935,10 @@ def compute_crosstab(var1, var2, data):
     residuals_adjusted = (observed - expected) / np.sqrt(
         expected * (1 - row_totals[:, None] / grand_total) * (1 - col_totals / grand_total)
     )
-    
-    percent_table = (observed / col_totals) * 100  
+
+    percent_table = (observed / col_totals) * 100
 
     return contingency_table, residuals_adjusted, percent_table, observed
-
 
 
 import streamlit as st
@@ -673,7 +987,7 @@ def hierarchical_crosstab_analysis_spss(data_tuple):
             return
 
         if st.button("🔍 **Buscar Cruzamentos**"):
-            all_pairs = [(var1, var2) for i, var1 in enumerate(selected_variables) for var2 in selected_variables[i+1:]]
+            all_pairs = [(var1, var2) for i, var1 in enumerate(selected_variables) for var2 in selected_variables[i + 1:]]
             relevant_pairs = []
 
             for var1, var2 in all_pairs:
@@ -743,9 +1057,6 @@ def hierarchical_crosstab_analysis_spss(data_tuple):
         st.dataframe(data_exibicao.head())
 
 
-
-
-
 def calcular_correlacao_somas(dados_tuple):
     """
     Função para calcular a correlação entre variáveis após somar os valores iguais.
@@ -754,12 +1065,12 @@ def calcular_correlacao_somas(dados_tuple):
 
     st.title("Análise de Correlação com Agregação")
 
-    # ✅ Garantir que estamos pegando apenas os dados numéricos (caso tenha vindo uma tupla)
+    # Garantir que estamos pegando apenas os dados numéricos (caso tenha vindo uma tupla)
     if isinstance(dados_tuple, tuple):
-        dados, dados_exibicao = dados_tuple  # Separando dados numéricos e labels
+        dados, dados_exibicao = dados_tuple
     else:
         dados = dados_tuple
-        dados_exibicao = None  # Caso não haja labels disponíveis
+        dados_exibicao = None
 
     # Exibir todas as colunas para seleção
     colunas = dados.columns.tolist()
@@ -823,7 +1134,7 @@ def calcular_correlacao_somas(dados_tuple):
         center=0,
         square=True,
         cbar_kws={"shrink": 0.8},
-        mask=mask if ocultar_inferior_esquerda else None  # Aplicando máscara ao PNG
+        mask=mask if ocultar_inferior_esquerda else None
     )
 
     plt.title(f"Matriz de Correlação ({metodo})", fontsize=16)
@@ -834,7 +1145,7 @@ def calcular_correlacao_somas(dados_tuple):
     fig.savefig(buffer, format="png")
     buffer.seek(0)
 
-    # Adicionar botão para download da imagem
+    # Botão para download da imagem
     st.download_button(
         label="Baixar Gráfico de Correlação (PNG)",
         data=buffer,
@@ -842,9 +1153,7 @@ def calcular_correlacao_somas(dados_tuple):
         mime="image/png",
     )
 
-
-
-    # ✅ Exportação da matriz de correlação para Excel
+    # Exportação da matriz de correlação para Excel
     def salvar_matriz_excel(matriz):
         """
         Função para salvar a matriz de correlação formatada no Excel.
@@ -858,27 +1167,27 @@ def calcular_correlacao_somas(dados_tuple):
             sheet = writer.sheets["Correlação"]
 
             # Ajustar a largura das colunas
-            for col_num, col_name in enumerate(matriz.columns, start=2):  
+            for col_num, col_name in enumerate(matriz.columns, start=2):
                 col_letter = get_column_letter(col_num)
-                sheet.column_dimensions[col_letter].width = 15  # Define a largura padrão das colunas
+                sheet.column_dimensions[col_letter].width = 15
 
             # Criar normalizador para as cores
             norm = Normalize(vmin=-1, vmax=1)
             cmap = sns.color_palette("coolwarm", as_cmap=True)
 
-            for i, row in enumerate(sheet.iter_rows(min_row=2, max_row=len(matriz)+1, min_col=2, max_col=len(matriz.columns)+1)):
+            for i, row in enumerate(sheet.iter_rows(min_row=2, max_row=len(matriz) + 1, min_col=2, max_col=len(matriz.columns) + 1)):
                 for j, cell in enumerate(row):
                     valor = cell.value
-                    if ocultar_inferior_esquerda and j < i:  # Oculta parte inferior esquerda
+                    if ocultar_inferior_esquerda and j < i:
                         cell.value = None
-                    elif isinstance(valor, (int, float)):  # Se for número
-                        cor_rgb = cmap(norm(-valor))[:3]  # **Invertendo as cores**
+                    elif isinstance(valor, (int, float)):
+                        cor_rgb = cmap(norm(-valor))[:3]  # invertendo as cores
                         cor_rgb = tuple(int(c * 255) for c in cor_rgb)
                         cor_hex = "{:02X}{:02X}{:02X}".format(*cor_rgb)
 
                         cell.fill = PatternFill(start_color=cor_hex, end_color=cor_hex, fill_type="solid")
-                        cell.number_format = "0.00"  # Formatação com duas casas decimais
-                        cell.font = Font(bold=True)  # Negrito nos valores
+                        cell.number_format = "0.00"
+                        cell.font = Font(bold=True)
 
         return caminho_arquivo
 
@@ -893,19 +1202,10 @@ def calcular_correlacao_somas(dados_tuple):
         )
 
 
-
 # Função para calcular pesos para variáveis escolhidas
 def calcular_frequencia_ponderada(df, perguntas, coluna_peso):
     """
     Função que permite escolher perguntas e calcular o peso delas usando a variável de peso.
-
-    Parâmetros:
-    - df: DataFrame contendo os dados
-    - perguntas: Lista de colunas das perguntas a serem analisadas
-    - coluna_peso: Nome da coluna que contém os pesos
-
-    Retorna:
-    - Dicionário com as tabelas de frequência ponderada e percentuais ponderados para cada pergunta selecionada.
     """
     if coluna_peso not in df.columns:
         raise ValueError(f"A coluna de pesos '{coluna_peso}' não existe no DataFrame. Colunas disponíveis: {df.columns.tolist()}")
@@ -915,36 +1215,25 @@ def calcular_frequencia_ponderada(df, perguntas, coluna_peso):
     for pergunta in perguntas:
         if pergunta not in df.columns:
             st.warning(f"⚠️ A coluna '{pergunta}' não existe no DataFrame e será ignorada.")
-            continue  
+            continue
 
-        # Calcula a frequência ponderada (soma dos pesos para cada resposta)
         tabela_ponderada = df.groupby(pergunta)[coluna_peso].sum()
-
-        # Calcula os percentuais ponderados
         tabela_percentual = (tabela_ponderada / tabela_ponderada.sum()) * 100
 
-        # Armazena os resultados no dicionário
         resultados[pergunta] = {"Frequências Ponderadas": tabela_ponderada, "Percentuais Ponderados": tabela_percentual}
 
     return resultados
 
-# Exemplo de uso
-# Simulando um DataFrame com perguntas e pesos
+
+# (Trecho de exemplo mantido, mas não afeta o app principal)
 data = {
     'Pergunta1': ['Sim', 'Não', 'Sim', 'Sim', 'Não', 'Não', 'Sim'],
     'Pergunta2': ['Alto', 'Médio', 'Baixo', 'Médio', 'Baixo', 'Alto', 'Alto'],
     'Peso': [1.5, 0.8, 1.2, 1.3, 1.7, 2.0, 1.1]
 }
-
 df = pd.DataFrame(data)
-
-# Lista de perguntas selecionadas pelo usuário
-perguntas_selecionadas = ['Pergunta1', 'Pergunta2', 'Pergunta_Inexistente']  # Incluí uma pergunta que não existe para testar
-
-# Rodando a função
+perguntas_selecionadas = ['Pergunta1', 'Pergunta2', 'Pergunta_Inexistente']
 resultados = calcular_frequencia_ponderada(df, perguntas_selecionadas, 'Peso')
-
-# Exibindo os resultados
 for pergunta, resultado in resultados.items():
     print(f"\n📊 Resultados para: {pergunta}")
     print("Frequências Ponderadas:")
@@ -953,22 +1242,35 @@ for pergunta, resultado in resultados.items():
     print(resultado["Percentuais Ponderados"])
 
 
+# Stub simples para não quebrar quando escolher "Predição"
+def modelo_predicao(dados):
+    st.header("Predição")
+    st.info("Módulo de predição ainda não foi implementado nesta versão do app.")
 
 
 # Função principal
 def main():
-    # Carregar os dados
     uploaded_file = st.file_uploader("Carregar Arquivo", type=["csv", "xlsx", "sav"])
 
     if uploaded_file is not None:
         dados, dados_exibicao = carregar_dados(uploaded_file)
 
         if dados is not None:
-            # Selecionar análise
-            analise = st.sidebar.selectbox("Escolha a análise", 
-                                           ("Tratamento de Dados", "Gráficos", "Predição", 
-                                            "Relatório Automatizado", "Análise de Correspondência", "Relatório em Excel", "Residuais", "Análise de Correlação", "Frequência Ponderada"))
-            
+            analise = st.sidebar.selectbox(
+                "Escolha a análise",
+                (
+                    "Tratamento de Dados",
+                    "Gráficos",
+                    "Predição",
+                    "Relatório Automatizado",
+                    "Mapas de Correspondência",
+                    "Relatório em Excel",
+                    "Residuais",
+                    "Análise de Correlação",
+                    "Frequência Ponderada",
+                ),
+            )
+
             if analise == "Tratamento de Dados":
                 tratamento_dados(dados)
             elif analise == "Gráficos":
@@ -977,7 +1279,7 @@ def main():
                 modelo_predicao(dados)
             elif analise == "Relatório Automatizado":
                 gerar_relatorio(dados)
-            elif analise == "Análise de Correspondência":
+            elif analise == "Mapas de Correspondência":
                 analise_correspondencia(dados)
             elif analise == "Relatório em Excel":
                 cruzar_variaveis_formatada(dados)
@@ -989,7 +1291,7 @@ def main():
                 colunas_disponiveis = [col for col in dados.columns if col.lower() != "peso"]
                 perguntas_selecionadas = st.multiselect("Selecione as perguntas:", colunas_disponiveis)
 
-                coluna_peso = "peso"  # Ajuste se necessário
+                coluna_peso = "peso"  # ajuste se o nome da coluna de peso for diferente
 
                 if perguntas_selecionadas:
                     resultados = calcular_frequencia_ponderada(dados, perguntas_selecionadas, coluna_peso)
@@ -1007,6 +1309,6 @@ def main():
     else:
         st.info("Por favor, carregue um arquivo para começar.")
 
-# Executar a função principal
+
 if __name__ == "__main__":
     main()
